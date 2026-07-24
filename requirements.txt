@@ -8,3 +8,6 @@ matplotlib>=3.7
 jupyter>=1.0
 jupytext>=1.16
 ipykernel>=6.25
+
+# Marimo app (2D_PINN_Inpainting_marimo.py — reactive slider-driven version)
+marimo>=0.23

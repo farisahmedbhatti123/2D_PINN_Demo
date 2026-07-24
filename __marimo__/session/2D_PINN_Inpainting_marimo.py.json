@@ -1,0 +1,334 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.23.14",
+    "script_metadata_hash": null
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "1d0db38904205bec4d6f6f6a1f6cec3e",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "a41c0626af49527b9705b88513095734",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"2d-pinn-inpainting-a-guided-tutorial-marimo-slim-edition\">2D PINN Inpainting \u2014 A Guided Tutorial (marimo, slim edition)</h1>\n<h3 id=\"reconstructing-a-cfd-velocity-field-from-a-handful-of-sensors\">Reconstructing a CFD velocity field from a handful of sensors</h3>\n<span class=\"paragraph\">This is the <strong>slim</strong> marimo version of <code>notebooks/00_inpainting_complete.py</code>. All the\nplotting and data-loading plumbing lives in the companion file <strong><code>pinn_utils_2d.py</code></strong>\n(same folder). Only the code that <em>is</em> the PINN method \u2014 the network, the autograd\ncontinuity residual, the loss, and the two training loops \u2014 stays visible here.</span>\n<h4 id=\"the-problem\">The problem</h4>\n<span class=\"paragraph\">We have a steady CFD simulation of flow through a <strong>baffled contact basin</strong> (water winding\naround a set of baffles). Pretend we only measured the velocity at <strong>K scattered \"sensor\"\npoints</strong>, far fewer than the thousands of mesh cells. Can we reconstruct the whole field?</span>\n<ol>\n<li><strong>Baseline \u2014 a plain MLP.</strong> Fit the K sensors by regression. It nails the sensors and\n   produces garbage in the gaps.</li>\n<li><strong>The PINN.</strong> Same network, same sensors, but we <em>also</em> penalize violations of the\n   <strong>incompressible continuity equation</strong> <marimo-tex class=\"arithmatex\">||(\\nabla\\!\\cdot\\mathbf{u}=0||)</marimo-tex> at thousands of\n   interior <em>collocation</em> points. That one physical law couples <marimo-tex class=\"arithmatex\">||(U_x||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(U_y||)</marimo-tex> everywhere,\n   so a measurement in one place constrains the field elsewhere \u2014 and the gaps fill in.</li>\n</ol>\n<span class=\"paragraph\">This is the classic Raissi-style PINN <em>inpainting</em> setup, applied to a 2D turbulent flow.</span>\n<hr />\n<blockquote>\n<span class=\"paragraph\"><strong>marimo is reactive:</strong> move a slider and every dependent cell re-runs \u2014 no \"Run All\".\nBecause training is slow, each model sits behind a <strong>\u25b6 Train</strong> button, so the notebook\nopens instantly. Cheap things (picking sensors, the \"before\" picture) update live as you\ndrag sliders.</span>\n<span class=\"paragraph\"><strong>Two files travel together:</strong> this notebook does <code>from pinn_utils_2d import ...</code>, so keep\n<code>pinn_utils_2d.py</code> in the same folder.</span>\n</blockquote></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "87de716d958f7efec891f0464bebaf44",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"a-quick-glossary\">A quick glossary</h2>\n<table>\n<thead>\n<tr>\n<th>Symbol / term</th>\n<th>Plain meaning</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td><marimo-tex class=\"arithmatex\">||((x, y)||)</marimo-tex></td>\n<td>position in the basin</td>\n</tr>\n<tr>\n<td><marimo-tex class=\"arithmatex\">||(\\mathbf{u}=(U_x, U_y)||)</marimo-tex></td>\n<td>the <strong>velocity</strong> we want to reconstruct everywhere</td>\n</tr>\n<tr>\n<td><strong>sensor</strong></td>\n<td>one of the <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> mesh points whose velocity we pretend to have measured</td>\n</tr>\n<tr>\n<td><strong>held-out points</strong></td>\n<td>every <em>other</em> mesh point \u2014 the network never sees these; we grade on them</td>\n</tr>\n<tr>\n<td><strong>collocation points</strong></td>\n<td>scattered interior <marimo-tex class=\"arithmatex\">||((x,y)||)</marimo-tex> where we <em>check the physics</em>, not the data</td>\n</tr>\n<tr>\n<td><strong>continuity</strong></td>\n<td><marimo-tex class=\"arithmatex\">||(\\partial U_x/\\partial x + \\partial U_y/\\partial y = 0||)</marimo-tex> \u2014 mass conservation for incompressible flow</td>\n</tr>\n<tr>\n<td><strong>residual</strong></td>\n<td>how badly a guess violates the equation (zero = perfect)</td>\n</tr>\n<tr>\n<td><strong>loss</strong></td>\n<td>one number measuring \"how wrong we are\"; training pushes it toward 0</td>\n</tr>\n<tr>\n<td><strong>autograd</strong></td>\n<td>PyTorch's automatic differentiation \u2014 exact derivatives of the network</td>\n</tr>\n</tbody>\n</table></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "0697d7505066fecb3b73d8e86af04a34",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-0-setup\">Step 0 \u2014 Setup</h2>\n<span class=\"paragraph\">We load the libraries and pull the shared plumbing from <strong><code>pinn_utils_2d.py</code></strong>: the CFD\ndata loader and every plotting helper. We set the matplotlib backend to <code>Agg</code> (static\nimages) <strong>before</strong> importing the helpers, so figures render cleanly inside marimo.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "3bc1304654c11b3b59f8f2b8e60a3a6f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "91a0a9cfd1b825a0f1a992b204346aff",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-1-load-the-cfd-case\">Step 1 \u2014 Load the CFD case</h2>\n<span class=\"paragraph\">One CSV per case: each row is a mesh point with its <marimo-tex class=\"arithmatex\">||((x, y, U_x, U_y)||)</marimo-tex>. We <strong>normalize</strong>\ncoordinates to <marimo-tex class=\"arithmatex\">||([0,1]^2||)</marimo-tex> (via <marimo-tex class=\"arithmatex\">||(x/L||)</marimo-tex>, <marimo-tex class=\"arithmatex\">||(y/W||)</marimo-tex>) and velocities by the inlet speed, so the\nnetwork's inputs and outputs are all <marimo-tex class=\"arithmatex\">||(O(1)||)</marimo-tex> \u2014 which keeps the autograd through the\ncontinuity residual numerically stable.</span>\n<span class=\"paragraph\"><code>CASE_ID = 834</code> is the 4-baffle case (the default). <code>267</code> is a simpler 1-baffle geometry.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "bee8866f678c1b97996f37ed0afe0e22",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "SFPL",
+      "code_hash": "a77752b038b7724ac23ca4a1b617c6a6",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "BYtC",
+      "code_hash": "539c38f008c1f0dd016e21909f91f70a",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-2-pick-the-sensors-live\">Step 2 \u2014 Pick the sensors (live)</h2>\n<span class=\"paragraph\">Choose how many sensors <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> we get, and which random draw (<code>seed</code>) places them. Everything\nelse \u2014 the whole basin \u2014 is <strong>held out</strong>: the network never sees it during training, and\nreconstruction error on those held-out points is the only score that matters.</span>\n<span class=\"paragraph\">Drag the sliders and the picture below redraws instantly. Notice how little the network has\nto work with in the middle of the basin.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "RGSE",
+      "code_hash": "c599f3c3b9f976370b7fd692e8c35cab",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Kclp",
+      "code_hash": "22c00114aa472ef0e4dde7e34eee2c27",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "emfo",
+      "code_hash": "f3fa58ac15d5a9d430f8b8d0f6887b01",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Hstk",
+      "code_hash": "fa15a932c4c8346bc7f8da4281c9c31e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-3-the-network-and-the-continuity-residual\">Step 3 \u2014 The network and the continuity residual</h2>\n<span class=\"paragraph\">The pieces that <em>are</em> the PINN method stay visible below.</span>\n<ul>\n<li><strong>The network</strong> is a plain MLP mapping <marimo-tex class=\"arithmatex\">||((x, y) \\to (U_x, U_y)||)</marimo-tex>: two inputs, <code>tanh</code>\n  hidden layers, two outputs.</li>\n<li><strong>Why <code>tanh</code> and not <code>ReLU</code>?</strong> The physics loss needs the network's <em>derivative</em>, and that\n  derivative must itself be differentiable (autograd differentiates the output w.r.t. the\n  inputs). <code>ReLU</code>'s second derivative is zero almost everywhere \u2014 useless for physics.\n  <code>tanh</code> is smooth at every order.</li>\n<li><strong>The continuity residual.</strong> The network outputs live in normalized units, so the chain\n  rule puts the <marimo-tex class=\"arithmatex\">||(1/L||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(1/W||)</marimo-tex> factors back: <marimo-tex class=\"arithmatex\">||(\\nabla \\cdot \\mathbf{u} = \\tfrac{1}{L}\\,\\partial U_x/\\partial x_\\text{norm} + \\tfrac{1}{W}\\,\\partial U_y/\\partial y_\\text{norm}||)</marimo-tex>\n  <code>create_graph=True</code> is what lets gradients later flow back through this derivative to the\n  weights.</li>\n</ul></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "nWHF",
+      "code_hash": "a6d696940eb89c5442202569a8871616",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "iLit",
+      "code_hash": "c3dd0182a7617d4c46fdc238f7b4c79a",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ZHCJ",
+      "code_hash": "6b3987c369f5407acf38a57712252d1f",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-4-train-the-plain-mlp-data-only-no-physics\">Step 4 \u2014 Train the plain MLP (data only, no physics)</h2>\n<span class=\"paragraph\">Standard supervised regression: the only loss is the mismatch between the network and the\ntrue velocity at the <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> sensor locations. Every <code>VAL_EVERY</code> epochs we score the held-out\npoints and keep the best checkpoint. Set the epoch budget and click <strong>Train</strong>.</span>\n<span class=\"paragraph\">The reconstruction panels below grade each model with the <strong>pointwise L2 vector error</strong>\n<marimo-tex class=\"arithmatex\">||(\\;e(\\mathbf{x}) = \\lVert \\mathbf{u}_\\text{pred}(\\mathbf{x})-\\mathbf{u}_\\text{true}(\\mathbf{x})\\rVert_2\n= \\sqrt{\\left(U_x^\\text{pred}-U_x^\\text{true}\\right)^2 + \\left(U_y^\\text{pred}-U_y^\\text{true}\\right)^2}||)</marimo-tex>.\nIt penalizes a wrong <em>direction</em> as well as a wrong <em>speed</em> \u2014 unlike\n<marimo-tex class=\"arithmatex\">||(\\bigl|\\,\\lVert\\mathbf{u}_\\text{pred}\\rVert-\\lVert\\mathbf{u}_\\text{true}\\rVert\\,\\bigr|||)</marimo-tex>, which can look\nsmall even when the predicted vector points the wrong way.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "ROlb",
+      "code_hash": "a6a9f8d9b28a7dad7b67658527fd6ed6",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "qnkX",
+      "code_hash": "ffaeb6d473f47ade24778b61669793d0",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "TqIu",
+      "code_hash": "2a76a5575c9b8db72605a25b2e84bdeb",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Vxnm",
+      "code_hash": "4584e9f74e4a4e61af213f5afa59797d",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "DnEU",
+      "code_hash": "c9b24d9d0f670ea3140e418d0e3d3e9e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-5-train-the-same-network-with-continuity\">Step 5 \u2014 Train the same network <em>with</em> continuity</h2>\n<span class=\"paragraph\">Identical network, identical sensor data. The only additions:</span>\n<ol>\n<li><strong>Collocation points</strong> \u2014 thousands of random interior <marimo-tex class=\"arithmatex\">||((x, y)||)</marimo-tex> where we ask the network\n   to satisfy <marimo-tex class=\"arithmatex\">||(\\nabla\\!\\cdot\\mathbf{u}=0||)</marimo-tex>. These are <em>not</em> observations. (Note: for\n   simplicity they're drawn uniformly over the whole <marimo-tex class=\"arithmatex\">||([0,1]^2||)</marimo-tex> bounding box \u2014 including\n   inside the solid baffles, where there is no flow. Both the collocation loss and the\n   divergence diagnostic below do this, so the MLP-vs-PINN comparison stays fair; masking\n   the baffle regions is a natural refinement.)</li>\n<li>The loss becomes <marimo-tex class=\"arithmatex\">||(\\;L_\\text{data} + \\lambda\\cdot\\text{ramp}(ep)\\cdot L_\\text{continuity}||)</marimo-tex>.</li>\n<li>A <strong>warmup ramp</strong> eases the physics weight in over the first fraction of training, so the\n   data term can anchor the prediction before the physics starts pulling.</li>\n</ol>\n<span class=\"paragraph\"><marimo-tex class=\"arithmatex\">||(\\lambda||)</marimo-tex> sets how hard the physics pulls. Try the default (1.0) first, then sweep it.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "ulZA",
+      "code_hash": "071158c4127bae19c0257280e61ee774",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ecfG",
+      "code_hash": "0c4590d4546a9828d2ec945c6b9e702b",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Pvdt",
+      "code_hash": "ca037d0a513b7ed0c119a75c2ff1bbe2",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-6-head-to-head\">Step 6 \u2014 Head to head</h2>\n<span class=\"paragraph\">Same network, same sensors \u2014 the only difference is that one obeyed one physical law. The\nsix panels below show truth, both reconstructions, both error fields, and a per-point\n<strong>improvement</strong> map (blue where the PINN beats the MLP). The divergence panels confirm the\nPINN's field is genuinely physical, and the loss curves show the data and physics terms\ndropping together.</span>\n<span class=\"paragraph\">Watch the title: at the <strong>sweet-spot</strong> <marimo-tex class=\"arithmatex\">||(K\\approx 50||)</marimo-tex> the PINN typically cuts held-out error\nby roughly a quarter to a third. Push <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> very low (both fail) or very high (the MLP no\nlonger needs help) and the gap shrinks \u2014 retrain after moving the sliders to see it.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "ZBYS",
+      "code_hash": "6bec665177fc1e0d7c703133e1ab24a6",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "aLJB",
+      "code_hash": "f8f1ff5b526f719e7e893fde62973466",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-7-deeper-comparison-where-how-and-versus-what-baseline\">Step 7 \u2014 Deeper comparison: where, how, and versus what baseline</h2>\n<span class=\"paragraph\">A single held-out MSE hides <em>where</em> and <em>what kind</em> of error each model makes. Three sharper\nviews (retrain both models above first, then these update):</span>\n<ol>\n<li><strong>An RBF (radial-basis-function) interpolation baseline</strong> \u2014 a smooth surface built to pass\n   through the <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> sensor values by placing one radial \"bump\" per sensor and summing them:\n   <marimo-tex class=\"arithmatex\">||(\\;f(\\mathbf{x}) = \\sum_{j=1}^{K} w_j\\,\\varphi(\\lVert \\mathbf{x}-\\mathbf{x}_j\\rVert)||)</marimo-tex>, with a\n   Gaussian kernel <marimo-tex class=\"arithmatex\">||(\\varphi(r)=e^{-(r/\\varepsilon)^2}||)</marimo-tex>. The weights <marimo-tex class=\"arithmatex\">||(w_j||)</marimo-tex> are found by solving a\n   small linear system so the surface matches every sensor exactly, and the width <marimo-tex class=\"arithmatex\">||(\\varepsilon||)</marimo-tex>\n   is set from the typical sensor spacing. It is <strong>mesh-free and needs no network training and no\n   physics</strong> \u2014 we simply interpolate <marimo-tex class=\"arithmatex\">||(U_x||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(U_y||)</marimo-tex> separately. This is the honest \"why not just\n   interpolate the sensors?\" baseline the network has to beat.</li>\n<li><strong>Error vs. distance to the nearest sensor</strong> \u2014 turns \"the PINN wins in the gaps\" into a curve.</li>\n<li><strong>Angular-error distribution</strong> \u2014 how far each field points in the <em>wrong direction</em> (magnitude\n   alone can look fine while the vector is wrong), as a magnitude-weighted histogram of MLP vs\n   PINN. A leftward shift of the PINN curve means it points the right way more often.</li>\n</ol></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "nHfw",
+      "code_hash": "e136898178201554e3ee4bd53c7ac730",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "xXTn",
+      "code_hash": "f1be8250112fc81e5402316bb03cb656",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "AjVT",
+      "code_hash": "64d3609e1bf64a195168c9e0c5dbed24",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "pHFh",
+      "code_hash": "4d73558852b75651c3e7c23a2257c2c7",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"step-8-adding-turbulent-momentum-rans-k-closure\">Step 8 \u2014 Adding turbulent momentum (RANS k-\u03b5 closure)</h2>\n<span class=\"paragraph\">Continuity couples <marimo-tex class=\"arithmatex\">||(U_x||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(U_y||)</marimo-tex>, but it is only <em>one</em> equation. The next rung on the\ncompleteness ladder is the <strong>momentum balance</strong>. For this turbulent basin the relevant form is\nthe steady, incompressible <strong>RANS</strong> momentum equation with a Boussinesq eddy-viscosity closure:</span>\n<marimo-tex class=\"arithmatex\">||[(\\mathbf{u}\\cdot\\nabla)\\mathbf{u} = -\\nabla P^{*} + \\nabla\\!\\cdot\\!\\big[(\\nu+\\nu_t)(\\nabla\\mathbf{u}+\\nabla\\mathbf{u}^{\\top})\\big].||]</marimo-tex><span class=\"paragraph\">Three things this needs that continuity did not:</span>\n<ol>\n<li><strong>Pressure.</strong> Momentum contains <marimo-tex class=\"arithmatex\">||(\\nabla P||)</marimo-tex>, and we have no pressure sensors \u2014 so we add a\n   <strong>third network output</strong> <marimo-tex class=\"arithmatex\">||(p||)</marimo-tex> and let it be <em>inferred</em> from momentum consistency (it is fixed\n   only up to a constant). That output is the <em>modified</em> pressure <marimo-tex class=\"arithmatex\">||(P^{*}=p/\\rho+\\tfrac{2}{3}k||)</marimo-tex>;\n   the <marimo-tex class=\"arithmatex\">||(\\tfrac{2}{3}k||)</marimo-tex> piece is negligible here.</li>\n<li><strong>Second derivatives.</strong> The viscous term is a Laplacian, so the residual needs\n   <marimo-tex class=\"arithmatex\">||(\\partial^2\\mathbf{u}||)</marimo-tex> \u2014 a second autograd pass (another reason for the smooth <code>tanh</code>).</li>\n<li><strong>The turbulence, supplied \u2014 not solved.</strong> We do <strong>not</strong> solve the <marimo-tex class=\"arithmatex\">||(k||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(\\varepsilon||)</marimo-tex>\n   transport equations. Instead we <em>supply</em> the eddy viscosity <marimo-tex class=\"arithmatex\">||(\\nu_t(x,y)||)</marimo-tex> the CFD already\n   computed and use <marimo-tex class=\"arithmatex\">||(\\nu_{\\text{eff}}=\\nu+\\nu_t||)</marimo-tex>. That is the honest move for this dataset: the\n   median <marimo-tex class=\"arithmatex\">||(\\nu_t||)</marimo-tex> is <strong>~16,000\u00d7</strong> the molecular <marimo-tex class=\"arithmatex\">||(\\nu||)</marimo-tex>, so a molecular-only (\"laminar\") momentum\n   law would be badly wrong \u2014 turbulence carries essentially all the momentum transport. (We\n   also freeze <marimo-tex class=\"arithmatex\">||(\\nu_t||)</marimo-tex> locally, i.e. neglect <marimo-tex class=\"arithmatex\">||(\\nabla\\nu_t||)</marimo-tex>, so the viscous term stays a clean\n   <marimo-tex class=\"arithmatex\">||(\\nu_{\\text{eff}}\\nabla^2\\mathbf{u}||)</marimo-tex>.)</li>\n</ol>\n<span class=\"paragraph\">The loss becomes <marimo-tex class=\"arithmatex\">||(\\;L_\\text{data} + \\lambda_c\\,L_\\text{continuity} + \\lambda_m\\,L_\\text{momentum}||)</marimo-tex>,\neach physics term eased in with the same warmup ramp. Momentum is a <em>partial</em> extra constraint,\nso expect a modest further gain over continuity \u2014 and a striking bonus: a pressure field the\nnetwork reconstructs without ever seeing one.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "NCOB",
+      "code_hash": "26115a0ea37c46aa624d35dbb46fd812",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "aqbW",
+      "code_hash": "80a3bca7fa2d62ea12e2e14f0198ecf7",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "TRpd",
+      "code_hash": "cf06619f2ee34d4546d858943b367804",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "TXez",
+      "code_hash": "ce3cb8db49c43763294e08f3e58af8e7",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "dNNg",
+      "code_hash": "770c2b3cd349c6c0ad9d1e8d0abcc628",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "yCnT",
+      "code_hash": "e65522415fb2e46322f56a0048799edb",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"per-term-loss-trajectories-rans-momentum-pinn\">Per-term loss trajectories (RANS-momentum PINN)</h3>\n<span class=\"paragraph\">Same read as the continuity-only curves, now with the momentum term. Watch the <strong>held-out val</strong>\n(green) and its distance to the <strong>data loss</strong> (blue) \u2014 the <em>generalization gap</em>. If the extra\nphysics is helping the network generalize, this gap should be no worse \u2014 ideally tighter \u2014 than\nthe continuity-only run in Step 6.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "wlCL",
+      "code_hash": "b7894a0a85f0f976398399f6e0510f2f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "kqZH",
+      "code_hash": "dcd6e2e50c9b4d026d9328f76c495ea4",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "wAgl",
+      "code_hash": "5a736b167c1493d1d058065954739e6f",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"wrapping-up-what-to-take-away\">Wrapping up \u2014 what to take away</h2>\n<ul>\n<li><strong>The loss is the physics.</strong> The PINN and the MLP differ by exactly one term \u2014 a squared\n  continuity residual at collocation points \u2014 yet the PINN reconstructs the gaps the MLP\n  cannot, because that one law couples <marimo-tex class=\"arithmatex\">||(U_x||)</marimo-tex> and <marimo-tex class=\"arithmatex\">||(U_y||)</marimo-tex> across the whole domain.</li>\n<li><strong>Derivatives come for free</strong> from autograd \u2014 that is what makes \"obey the equation\"\n  measurable, and why we need a smooth activation like <code>tanh</code>.</li>\n<li><strong>Physics buys data efficiency in the sparse regime.</strong> The win is largest around\n  <marimo-tex class=\"arithmatex\">||(K\\approx 50||)</marimo-tex>. It is <em>not</em> magic at every scale \u2014 see below.</li>\n<li><strong>More physics is a ladder, not a switch.</strong> Step 8 adds the RANS <marimo-tex class=\"arithmatex\">||(k\\text{-}\\varepsilon||)</marimo-tex>\n  momentum balance (with the eddy viscosity <em>supplied</em> from the CFD) on top of continuity. It is\n  a <em>partial</em> extra constraint, so it buys a further, smaller gain \u2014 and, as a bonus, the network\n  reconstructs a <strong>pressure field it was never shown</strong>. Completeness (continuity \u2192 momentum \u2192\n  closure) is what steadily tightens the generalization gap.</li>\n</ul>\n<span class=\"paragraph\"><strong>Things to try (move sliders, then retrain):</strong></span>\n<ol>\n<li><strong>Sensor sparsity.</strong> Set <marimo-tex class=\"arithmatex\">||(K=20||)</marimo-tex> then <marimo-tex class=\"arithmatex\">||(K=300||)</marimo-tex> and retrain both models. At low <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> both\n   fail; at high <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex> the MLP interpolates fine on its own and the gap collapses \u2014 sometimes\n   continuity even <em>slightly hurts</em>. That is incomplete physics meeting sufficient data, and\n   it is a feature to teach.</li>\n<li><strong>The physics weight <marimo-tex class=\"arithmatex\">||(\\lambda||)</marimo-tex>.</strong> Sweep it <marimo-tex class=\"arithmatex\">||(\\{0, 0.25, 1, 3, 5\\}||)</marimo-tex>. Is bigger always\n   better? (Watch the data loss in the curves \u2014 too much <marimo-tex class=\"arithmatex\">||(\\lambda||)</marimo-tex> and physics fights the\n   data anchor.)</li>\n<li><strong>Seed variance.</strong> Hold <marimo-tex class=\"arithmatex\">||(K=50||)</marimo-tex> and step the seed 42 to 46, retraining each time. The\n   improvement swings ~2x across <em>which</em> points you happen to sense \u2014 always report a range,\n   never one lucky number.</li>\n<li><strong>A different case.</strong> Set <code>CASE_ID = 267</code> in Step 1 (simpler 1-baffle flow). The sweet\n   spot moves to a lower <marimo-tex class=\"arithmatex\">||(K||)</marimo-tex>.</li>\n<li><strong>The momentum weight <marimo-tex class=\"arithmatex\">||(\\lambda_m||)</marimo-tex> (Step 8).</strong> Sweep it and watch the RANS loss trajectories:\n   does adding momentum lower the held-out val and tighten the generalization gap, or just\n   trade data fit for physics? Compare its gap with the continuity-only run.</li>\n</ol>\n<span class=\"paragraph\"><strong>Where the plumbing lives:</strong> all data-loading and plotting code is in <code>pinn_utils_2d.py</code>,\ndocumented with docstrings. The <code>plot_*</code> helpers return their Figure, which is why the cells\nabove wrap them in <code>mo.as_html(...)</code>.</span>\n<span class=\"paragraph\"><strong>Reference.</strong> Raissi, M., Perdikaris, P., &amp; Karniadakis, G. E. (2019). <em>Physics-informed\nneural networks.</em> Journal of Computational Physics, 378, 686-707.\ndoi:10.1016/j.jcp.2018.10.045</span></span>"
+          }
+        }
+      ],
+      "console": []
+    }
+  ]
+}
